@@ -1,9 +1,9 @@
-# DeepGRU: Deep Gesture Recognition Utility
+# ContextGRU
 
-Official PyTorch implementation of [DeepGRU](https://arxiv.org/abs/1810.12514).
+Fork of the PyTorch implementation of [DeepGRU](https://arxiv.org/abs/1810.12514) adapted to handle contextualized time series inputs.
 
 <p align="center">
-  <img width="500" src="https://github.com/Maghoumi/DeepGRU/blob/master/images/DeepGRU.png"/>
+  <img width="500" src="model.png"/>
 </p>
 
 ## Getting Started
