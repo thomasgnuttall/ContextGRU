@@ -5,7 +5,6 @@ import torch
 import torch.utils.data as data
 from torch.utils.data.sampler import SubsetRandomSampler
 from torch.utils.data import DataLoader
-from sklearn.model_selection import train_test_split
 
 from utils.logger import log
 
@@ -34,34 +33,6 @@ class HyperParameterSet:
             ])
 
 
-from sklearn.model_selection import StratifiedKFold
-
-def get_stratified_fold_indices(all_indices, all_labels, fold_number, n_folds):
-    """
-    Returns train and test indices for a specific fold using stratified k-fold splitting.
-
-    Parameters:
-        all_indices (list[int]): List of all sample indices.
-        all_labels (list[int]): Corresponding class labels for stratification.
-        fold_number (int): Which fold to use as the test fold (0-based).
-        n_folds (int): Total number of folds.
-
-    Returns:
-        train_indices (list[int]), test_indices (list[int])
-    """
-    assert len(all_indices) == len(all_labels), "Indices and labels must match in length."
-    assert 0 <= fold_number < n_folds, "Invalid fold number."
-
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=False)  # no randomness
-    splits = list(skf.split(all_indices, all_labels))
-
-    train_idx, test_idx = splits[fold_number]
-    train_indices = [all_indices[i] for i in train_idx]
-    test_indices = [all_indices[i] for i in test_idx]
-
-    return train_indices, test_indices
-
-
 # ----------------------------------------------------------------------------------------------------------------------
 class PadCollate:
     """
@@ -80,10 +51,8 @@ class PadCollate:
         curr_xs_padded = torch.nn.utils.rnn.pad_sequence(curr_xs, batch_first=True)
         succ_xs_padded = torch.nn.utils.rnn.pad_sequence(succ_xs, batch_first=True)
         ys = torch.LongTensor(ys)
-        prec_lengths = torch.LongTensor([len(x) for x in prec_xs])
-        curr_lengths = torch.LongTensor([len(x) for x in curr_xs])
-        succ_lengths = torch.LongTensor([len(x) for x in succ_xs])
-        return prec_xs_padded, curr_xs_padded, succ_xs_padded, prec_lengths, curr_lengths, succ_lengths, ys, svara_forms
+        lengths = torch.LongTensor([len(x) for x in xs])
+        return prec_xs_padded, curr_xs_padded, succ_xs_padded, lengths, ys, svara_forms
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -188,66 +157,7 @@ class Dataset(data.Dataset):
 
         return train_loader, test_loader
 
-    def _get_train_test_sampler(self, fold_idx, shuffle=True, random_seed=None, normalize=False):
-        """
-        Randomly split the full dataset into 70% train and 30% test.
-        Populates self._cache, and returns samplers.
-        """
-        random_seed = random_seed if random_seed is not None else 42
-
-        # Reset
-        self._cache = []
-
-        # Use all available samples
-        train, test = self.underlying_dataset.get_indices_for_fold(fold_idx, shuffle, 42)
-        
-        # Get the full list of indices
-        samples = [x for x in train + test]
-        all_labels = [x.label for x in samples]
-
-        # Load all samples at those indices
-        #samples = [self.underlying_dataset.get_item_by_index(i) for i in train_and_test_indices]
-        sample_paths = [s.path for s in samples]  # for later sanity check
-
-        all_indices = list(range(len(samples)))
-
-        # Shuffle if requested
-        #if shuffle:
-        #    random.Random(random_seed).shuffle(all_indices)
-
-        #train_indices_raw, test_indices_raw = train_test_split(
-            #all_indices, test_size=0.3
-        #)
-        train_indices_raw, test_indices_raw = get_stratified_fold_indices(all_indices, all_labels, fold_idx, 5)
-
-        # Fill the cache and record mapped indices
-        train_indices = []
-        test_indices = []
-        
-        for i in all_indices:
-            sample = samples[i]
-            class_name, svara_form, prec, curr, succ = sample.to_numpy()
-
-            prec = torch.from_numpy(prec)
-            curr = torch.from_numpy(curr)
-            succ = torch.from_numpy(succ)
-            label = torch.from_numpy(np.asarray(self.class_to_idx[class_name]))
-
-            self._cache.append((prec, curr, succ, label, svara_form, False, sample.path))
-
-            if i in train_indices_raw:
-                train_indices.append(len(self._cache) - 1)
-            else:
-                test_indices.append(len(self._cache) - 1)
-
-        # Final sanity check: no overlap
-        #train_paths = {self._cache[idx][6] for idx in train_indices}
-        #test_paths = {self._cache[idx][6] for idx in test_indices}
-        #assert train_paths.isdisjoint(test_paths), "Train/test sets overlap!"
-
-        return SubsetRandomSampler(train_indices), SubsetRandomSampler(test_indices)
-
-    def _get_train_test_sampler_old(self, fold_idx, shuffle, random_seed=None, normalize=False):
+    def _get_train_test_sampler(self, fold_idx, shuffle, random_seed=None, normalize=False):
         """
         Creates the training/testing samplers for this dataset.
         This function populates self._cache and computes z-score normalization factors (if requested)
@@ -268,14 +178,22 @@ class Dataset(data.Dataset):
             generate_synth = True
             log("Filling cache and generating {} synthetic samples...".format(self.num_synth))
 
+        aggregate_data = []
+
+        if generate_synth:
+            augs = self._get_augmenters(random_seed)
+
+            if self.num_synth > 0 and augs is None or len(augs) == 0:
+                raise Exception('Augmentation requested but this dataset is not producing valid data augmentors!')
+
         # Training
         for idx, sample in enumerate(train):
             class_name, svara_form, prec, curr, succ = sample.to_numpy()
             
             # Convert to PyTorch tensor
-            prec = torch.from_numpy(prec.astype('float32'))
-            curr = torch.from_numpy(curr.astype('float32'))
-            succ = torch.from_numpy(succ.astype('float32'))
+            prec = torch.from_numpy(prec)
+            curr = torch.from_numpy(curr)
+            succ = torch.from_numpy(succ)
             
             # Convert to PyTorch tensor
             label = torch.from_numpy(np.asarray(self.class_to_idx[class_name]))
@@ -283,15 +201,38 @@ class Dataset(data.Dataset):
             self._cache += [(prec, curr, succ, label, svara_form, False, sample.path)]
             train_indices += [len(self) - 1]
 
+            if normalize:
+                aggregate_data.append(pts)
+
+            # Generate synthetic samples if needed
+            if generate_synth:
+                for a_idx, aug_a in enumerate(augs):
+                    synth_samples_a = aug_a.generate_samples(pts)
+
+                    if synth_samples_a is not None:
+                        # Add each sample to the training set
+                        for synth_pts_a in synth_samples_a:
+
+                            # Convert to PyTorch tensor
+                            result = torch.from_numpy(synth_pts_a)
+                            label = label.clone()
+
+                            self._cache += [(result, label, svara_form, True, sample.path)]
+
+                            if normalize:
+                                aggregate_data.append(synth_pts_a)
+
+                            # Add the synthetic sample to the training set as well
+                            train_indices += [len(self) - 1]
 
         # Testing
         for sample in test:
             class_name, svara_form, prec, curr, succ = sample.to_numpy()
             
             # Convert to PyTorch tensor
-            prec = torch.from_numpy(prec.astype('float32'))
-            curr = torch.from_numpy(curr.astype('float32'))
-            succ = torch.from_numpy(succ.astype('float32'))
+            prec = torch.from_numpy(prec)
+            curr = torch.from_numpy(curr)
+            succ = torch.from_numpy(succ)
             label = torch.from_numpy(np.asarray(self.class_to_idx[class_name]))
 
             self._cache += [(prec, curr, succ, label, svara_form, False, sample.path)]
@@ -301,6 +242,26 @@ class Dataset(data.Dataset):
         if shuffle:
             random.Random(random_seed).shuffle(train_indices)
 
+        # Do appropriate z-score normalization if requested
+        if normalize:
+            # Calculate the mean/stdev
+            aggregate_data = np.concatenate(aggregate_data)
+            avg = np.average(aggregate_data, axis=0)
+            std = np.std(aggregate_data, axis=0, dtype=np.float32)
+            std[std == 0] = 1
+            self.avg = avg
+            self.std = std
+
+            indices = list(range(len(self)))  # To account for synthetic samples that were added too
+
+            for i in indices:
+                sample, label, is_synth, sample_path = self[i]
+                pt = sample.numpy()
+                new_pt = (pt - avg) / std
+                self._cache[i] = (torch.from_numpy(new_pt), label, is_synth, sample_path)
+        else:
+            self.avg = None
+            self.std = None
 
         # Do some extremely important sanity checks:
         # 1) Ensure no overlap between train/test set after everything is done:

@@ -14,6 +14,7 @@ from model import DeepGRU
 from dataset.datafactory import DataFactory
 from utils.average_meter import AverageMeter  # Running average computation
 from utils.logger import log                  # Logging
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # ----------------------------------------------------------------------------------------------------------------------
 parser = argparse.ArgumentParser(description='DeepGRU Training')
@@ -27,9 +28,6 @@ parser.add_argument('--seed', type=int, metavar='N',
 parser.add_argument('--num-synth', type=int, metavar='N',
                     help='number of synthetic samples to generate',
                     default=0)
-parser.add_argument('--f', type=float,
-                    help='size of context in seconds',
-                    default=0.1)
 parser.add_argument('--use-cuda', action='store_true',
                     help='use CUDA if available',
                     default=True)
@@ -103,7 +101,7 @@ def main():
     # Load the dataset
     log.set_dataset_name(args.dataset)
     dataset = DataFactory.instantiate(
-        args.dataset, f=round(args.f, 2), augment=args.augment, 
+        args.dataset, augment=args.augment, 
         svara_form_target=args.svara_form_target, 
         svara_form_group=args.svara_form_group, 
         num_synth=0)
@@ -152,11 +150,33 @@ def run_fold(dataset, fold_idx, results_path, use_cuda):
     log('Load pretrained model')
     n_classes = 7 if not args.svara_form_target else 78
 
+    # Load pretrained model
+    pretrained_model = DeepGRU(dataset.num_features, n_classes, with_context=args.melodic_context)
+    
+    pretrained_model_path = args.pretrain_path
+    
+    log('Extract state dict')
+    state_dict = torch.load(pretrained_model_path, map_location=torch.device('cpu'))
+    state_dict = {k.replace('module.',''):v for k,v in state_dict.items()}
+
+    pretrained_model.load_state_dict(state_dict)
+    
     log('Initialize current model')
     # Initialize fine-tuning model
     model = DeepGRU(dataset.num_features, n_classes, with_context=args.melodic_context)
     log(f"  number of classes: {n_classes}")
 
+    # Load pretrained encoder weights (ignore classifier)
+    pretrained_dict = pretrained_model.state_dict()
+    finetune_dict = model.state_dict()
+
+    # Filter out classifier weights
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if "classifier" not in k}
+    
+    log('Update state dict')
+    # Update fine-tune model with pretrained encoder weights
+    finetune_dict.update(pretrained_dict)
+    model.load_state_dict(finetune_dict)
 
     # FINETUNING!
     if use_cuda:
@@ -175,6 +195,7 @@ def run_fold(dataset, fold_idx, results_path, use_cuda):
     append_tuple_to_csv(results_path, row)
 
     # Phase 1: Freeze encoder, train classifier
+    classifier_epochs = 50
     for name, param in model.named_parameters():
         if "classifier" not in name:
             param.requires_grad = False
@@ -185,17 +206,50 @@ def run_fold(dataset, fold_idx, results_path, use_cuda):
                                  weight_decay=hyperparameters.weight_decay)
 
 
+    log('Phase 1 - Train classifier only')
+    log('-------------------------------')
+    # Train the model
+    for preepoch in range(classifier_epochs):
+        loss_meter = AverageMeter()
+        train_meter = AverageMeter()
 
-    log('Phase 1 - Train entire network')
+        for batch in train_loader:
+            model.train()
+            optimizer.zero_grad()
+
+            accuracy, curr_batch_size, loss = run_batch(batch, model, criterion)
+
+            # Backward and optimize
+            loss.backward()
+            optimizer.step()
+            
+            loss_meter.update(loss.item(), curr_batch_size)
+            train_meter.update(accuracy, curr_batch_size)
+
+        train_accuracy = train_meter.avg
+        train_loss = loss_meter.avg
+
+        row = (fold_idx, preepoch, train_loss, None, train_accuracy, None)
+        append_tuple_to_csv(results_path, row)
+        
+        log(f'Epoch: [{preepoch}]')
+        log(f'       [Train Loss]          {train_loss}')
+        log(f'       [Train F1]      {train_accuracy}')
+
+
+    log('Phase 2 - Train entire network')
     log('-------------------------------')
     for param in model.parameters():
         param.requires_grad = True
 
     optimizer = torch.optim.Adam(model.parameters(),
-                                 lr=hyperparameters.learning_rate,  # Typically a lower LR
+                                 lr=hyperparameters.learning_rate * 0.1,  # Typically a lower LR
                                  weight_decay=hyperparameters.weight_decay)
+    
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+
     # Train the model
-    for epoch in range(hyperparameters.num_epochs):
+    for epoch in range(preepoch + 1, hyperparameters.num_epochs):
         loss_meter = AverageMeter()
         train_meter = AverageMeter()
         test_meter = AverageMeter()
@@ -245,6 +299,8 @@ def run_fold(dataset, fold_idx, results_path, use_cuda):
                     log(f"saving model to {model_path}")
                     torch.save(model.state_dict(), model_path)
         
+        scheduler.step(test_loss)
+
         row = (fold_idx, epoch, train_loss, test_loss, train_accuracy, test_accuracy)
         append_tuple_to_csv(results_path, row)
         

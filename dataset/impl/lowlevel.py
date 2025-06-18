@@ -47,13 +47,18 @@ class LowLevelDataset(object):
 # ----------------------------------------------------------------------------------------------------------------------
 class Sample(object):
     """
-    Represents one sample and its label in a low-level dataset.
+    Represents one sample and its labels in a low-level dataset.
+        -> Sample(
+            svara label, svara form label, prec context, 
+            curr svara, succ context, subject, data path)
     """
-
-    def __init__(self, pts, label, subject, path):
+    def __init__(self, slabel, sflabel, prec, curr, succ, subject, path):
         """ """
-        self.pts = pts
-        self.label = label
+        self.label = slabel # prediction label
+        self.sflabel = sflabel # svara form label for creating triplets for contrastive learning
+        self.prec = prec
+        self.curr = curr
+        self.succ = succ
         self.subject = subject
         self.path = path
 
@@ -64,4 +69,9 @@ class Sample(object):
         return self.path == other.path
 
     def to_numpy(self):
-        return np.array(self.pts, dtype=np.float32), self.label
+        all_data = (
+            self.label, self.sflabel, 
+            np.array(self.prec, dtype=np.float32), 
+            np.array(self.curr, dtype=np.float32), 
+            np.array(self.succ, dtype=np.float32))
+        return all_data
