@@ -1,75 +1,48 @@
 # ContextGRU
 
-Fork of the PyTorch implementation of [DeepGRU](https://arxiv.org/abs/1810.12514) adapted to handle contextualized time series inputs.
+Context-aware GRU model for improved svara representation in Carnatic music, accompanying **“Leveraging Melodic Context for Improved Svara Representation”** (CMMR 2025).
 
-<p align="center">
-  <img width="500" src="model.png"/>
-</p>
+![](model.png)
 
-## Getting Started
+## Setup
 
-I've tried my best to make the code work out-of-the-box, and provide an extensible framework to ease experimentation.
-
-### Prerequisites
-
-The list of requirements for this project is extremely short:
-- Python v3.5+
-- [PyTorch v1.2+](https://pytorch.org/)
-- [Numpy](https://numpy.org/) (will be installed along PyTorch)
-- (Optional) [CUDA toolkit](https://developer.nvidia.com/cuda-toolkit) with an NVIDIA GPU (for faster training, although CPU-only training still works)
-
-All the requirements are included in `requirements.txt`.
-
-### Running the Code:
-
-Running the code involves 3 easy steps:
-
-1) Obtain the sources
-```
-git clone https://github.com/Maghoumi/DeepGRU.git
-cd DeepGRU
+```bash
+git clone https://github.com/vivekvjyn/ContextGRU.git
+cd ContextGRU
+pip install -e .
 ```
 
-2) Install the dependencies (make sure the correct `pip` is used)
-```
-pip install -r requirements.txt
-```
+Place the preprocessed Bhairavi data in `data/bhairavi/` as `TRAIN.pkl` and `TEST.pkl`.
 
-3) Run the code (make sure the correct `python` (v3.5+) is used)
-```
-python main.py
-```
+## Ablation
 
-The above code will download the [SBU Kinect Interaction](https://www3.cs.stonybrook.edu/~kyun/research/kinect_interaction/index.html) dataset and run the standard 5-fold cross-validation experiments. The dataset will be downloaded to `DeepGRU/data` and the run results will be dumped under `DeepGRU/logs`.
+Run the four context/target experiments:
 
-The training progress will be showed in the standard output, and you should see an average recognition accuracy of about 95.5% if all folds run to completion.
-
-
-## A Few Notes
-
-### Omission of GPSR Implementation
-
-At the time of writing, [GPSR](https://dl.acm.org/citation.cfm?id=2984525) is [patented in the United States](https://patents.google.com/patent/US20180018533A1/en) and its inclusion in any project would impose a [restrictive license](https://github.com/ISUE/Jackknife/blob/master/LICENSE) on any open source code. As such, I've decided to omit GPSR from this repository to allow unrestricted usage of DeepGRU. You can implement GPSR yourself by referring to the pseudocode in the appendix of the original paper.
-
-### Result Reproduction
-
-We used PyTorch v0.4 in our original experiments, and we encountered slightly different results with more recent versions of PyTorch (even with the same random seeds). The results also vary depending on what GPU is used for training. As mentioned above, our implementation of GPSR is omitted from this repository due to licensing issues. Considering all these, the exact results of our paper may not be easily reproducible.
-
-## Citing
-
-If you find this code or our paper useful, kindly please cite our work:
-
-```
-@article{maghoumi2018deepgru,
-  title={DeepGRU: Deep Gesture Recognition Utility},
-  author={Maghoumi, Mehran and LaViola Jr, Joseph J},
-  journal={arXiv preprint arXiv:1810.12514},
-  year={2018}
-}
+```bash
+./run.sh ablation
 ```
 
+The aggregate results are written to:
 
-## License
+```text
+results/ablation.csv
+```
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+The table reports mean and standard-deviation F1 for svara and svara-form classification, with and without melodic context.
 
+## Analysis
+
+Run the encoder contribution analysis using a saved context model checkpoint:
+
+```bash
+./run.sh analysis \
+  --checkpoint runs/context-model/best_model_fold=0.pt
+```
+
+The aggregate analysis table is written to:
+
+```text
+results/analysis.csv
+```
+
+The table reports normalized gradient contributions for the preceding, current, and succeeding encoders.
